@@ -1,0 +1,10 @@
+{
+  "name": "scst-web",
+  "version": "1.0.0",
+  "description": "Supply Chain Savings Tracker - Modern Web Application",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "seed": "node seed/seed.js"
+  }
+}

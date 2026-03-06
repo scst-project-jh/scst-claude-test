@@ -1,0 +1,23 @@
+body {
+  font-size: 0.9rem;
+}
+
+.table th {
+  white-space: nowrap;
+}
+
+.navbar-brand {
+  font-weight: bold;
+}
+
+.card-header {
+  font-size: 0.85rem;
+}
+
+.badge {
+  font-weight: 500;
+}
+
+.sticky-top {
+  z-index: 10;
+}
