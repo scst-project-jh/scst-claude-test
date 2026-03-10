@@ -32,6 +32,7 @@ function seed() {
   // Commodity Types
   db.Commodity_Type.push({ Commodity_TypeID: nextId('Commodity_Type'), Commodity_TypeName: 'Indirect' });
   db.Commodity_Type.push({ Commodity_TypeID: nextId('Commodity_Type'), Commodity_TypeName: 'Direct' });
+  db.Commodity_Type.push({ Commodity_TypeID: nextId('Commodity_Type'), Commodity_TypeName: 'Logistics' });
 
   // Commodity Teams
   db.Commodity_Team_Name.push({ Commodity_Team_NameID: nextId('Commodity_Team_Name'), Commodity_Team_NameDesc: 'Raw Materials', Commodity_TypeID: 1 });
@@ -165,9 +166,15 @@ function seed() {
   db.ProjectDetails.push({ ProjectDetailsID: nextId('ProjectDetails'), ProjectID: 2, SCSCommodity_Team_NameID: 3, SCSCommodity_FamilyID: 4, SCSCommodity_DescriptionID: 5, Commodity_Code: 'FRT-001', Supplier: 'Pacific Freight LLC', SCSTBusinessUnitID: 1, RegionID: 1, SiteID: 1, Site: 'Chicago Plant', SupplierID: 3, LocalSupplierID: 4, PurchaseTypeID: 3, RecordStatus: 'ACTIVE' });
   db.ProjectDetails.push({ ProjectDetailsID: nextId('ProjectDetails'), ProjectID: 3, SCSCommodity_Team_NameID: 2, SCSCommodity_FamilyID: 3, SCSCommodity_DescriptionID: 4, Commodity_Code: 'CRG-001', Supplier: 'Premium Packaging Co', SCSTBusinessUnitID: 3, RegionID: 2, SiteID: 3, Site: 'Munich Factory', SupplierID: 4, LocalSupplierID: 5, PurchaseTypeID: 2, RecordStatus: 'ACTIVE' });
 
-  // Savings
-  db.SavingsSummary.push({ SavingsID: nextId('SavingsSummary'), Spend: 500000, SavingsAmountType: 'Percentage', SavingsAmountValue: 5, Savings: 25000, Remarks: 'Contract renegotiation savings', Status: 'Approved', NET: 20000, COI: 5000, ProjectID: 1, UpdatedBy: 'admin', AdditionalSavingsConsiderations: 'Multi-year agreement', ImplementationDate: '2025-09-01', OneTimeSavings: 'No', FiscalYear: 2025 });
-  db.SavingsSummary.push({ SavingsID: nextId('SavingsSummary'), Spend: 750000, SavingsAmountType: 'Fixed', SavingsAmountValue: null, Savings: 45000, Remarks: 'Route optimization savings', Status: 'Pending', NET: 40000, COI: 5000, ProjectID: 2, UpdatedBy: 'approver', AdditionalSavingsConsiderations: 'Pending logistics review', ImplementationDate: '2025-10-01', OneTimeSavings: 'Yes', FiscalYear: 2025 });
+  // Savings - NET/COI calculated from implementation date
+  // NET = ((22 - monthNumber) / 12) * Savings; COI = Savings - NET
+  // For OneTimeSavings='Yes': NET = Savings, COI = 0
+  // Impl date 2025-09-01: month=9, NET = ((22-9)/12)*25000 = 27083.33, COI = 25000-27083.33 = -2083.33
+  // Actually: NET = ((22-9)/12)*25000 = 13/12*25000 = 27083.33; COI = 25000 - 27083.33
+  const net1 = Math.round(((22 - 9) / 12) * 25000 * 100) / 100; // month 9 (September)
+  db.SavingsSummary.push({ SavingsID: nextId('SavingsSummary'), Spend: 500000, SavingsAmountType: 'Percentage', SavingsAmountValue: 5, Savings: 25000, Remarks: 'Contract renegotiation savings', Status: 'Approved', NET: net1, COI: Math.round((25000 - net1) * 100) / 100, ProjectID: 1, UpdatedBy: 'admin', AdditionalSavingsConsiderations: 'Multi-year agreement', ImplementationDate: '2025-09-01', OneTimeSavings: 'No', FiscalYear: 2025 });
+  // OneTimeSavings='Yes': NET = Savings, COI = 0
+  db.SavingsSummary.push({ SavingsID: nextId('SavingsSummary'), Spend: 750000, SavingsAmountType: 'Fixed', SavingsAmountValue: null, Savings: 45000, Remarks: 'Route optimization savings', Status: 'Pending', NET: 45000, COI: 0, ProjectID: 2, UpdatedBy: 'approver', AdditionalSavingsConsiderations: 'Pending logistics review', ImplementationDate: '2025-10-01', OneTimeSavings: 'Yes', FiscalYear: 2026 });
 
   saveDb();
 

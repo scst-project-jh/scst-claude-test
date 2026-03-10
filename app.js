@@ -53,6 +53,70 @@ function auth(req, res) { if (!req.session || !req.session.user) { res.redirect(
 function perm(req, p) { return (req.userPermissions || []).includes(p); }
 function toArr(v) { return Array.isArray(v) ? v : (v ? [v] : []); }
 
+// Fiscal year: Oct-Dec = calendar year + 1, Jan-Sep = calendar year
+function getFiscalYear(date) {
+  const d = date ? new Date(date) : new Date();
+  const month = d.getMonth(); // 0-indexed: 0=Jan, 9=Oct, 10=Nov, 11=Dec
+  return month >= 9 ? d.getFullYear() + 1 : d.getFullYear();
+}
+
+// NET/COI calculation based on implementation date
+// NET = ((22 - monthNumber) / 12) * TotalSavings; COI = TotalSavings - NET
+// When OneTimeSavings = 'Yes': NET = TotalSavings, COI = 0
+function calcNetCoi(totalSavings, implementationDate, oneTimeSavings) {
+  if (oneTimeSavings === 'Yes') return { NET: totalSavings, COI: 0 };
+  const implDate = implementationDate ? new Date(implementationDate) : new Date();
+  const monthNumber = implDate.getMonth() + 1; // 1-12
+  const net = ((22 - monthNumber) / 12) * totalSavings;
+  const coi = totalSavings - net;
+  return { NET: Math.round(net * 100) / 100, COI: Math.round(coi * 100) / 100 };
+}
+
+// Recalculate all savings records for a project based on current total spend (for Direct projects)
+function recalcProjectSavings(pid, newTotalSpend) {
+  const db = getDb();
+  db.SavingsSummary.filter(s => s.ProjectID === pid).forEach(s => {
+    s.Spend = newTotalSpend;
+    if (s.SavingsAmountType === 'Percentage' && s.SavingsAmountValue) {
+      s.Savings = newTotalSpend * (s.SavingsAmountValue / 100);
+    }
+    const { NET, COI } = calcNetCoi(s.Savings, s.ImplementationDate, s.OneTimeSavings);
+    s.NET = NET; s.COI = COI;
+    s.orig_Spend = newTotalSpend;
+    s.orig_Savings = s.Savings;
+  });
+}
+
+// Get total SSLC spend for a Direct project
+function getDirectProjectSpend(pid) {
+  const db = getDb();
+  return db.ProjectDetails.filter(d => d.ProjectID === pid && d.RecordStatus === 'ACTIVE' && d.SSLCs_ID)
+    .reduce((sum, d) => {
+      const sslc = db.SSLCs.find(s => s.ID === d.SSLCs_ID);
+      return sum + (sslc ? (sslc.BaseSpendVolume || 0) + (sslc.AdjustmentVolume || 0) : 0);
+    }, 0);
+}
+
+// Get total spend for Indirect/Logistics projects (from savings records)
+function getIndirectProjectSpend(pid) {
+  const db = getDb();
+  const savings = db.SavingsSummary.filter(s => s.ProjectID === pid);
+  return savings.length > 0 ? (savings[0].Spend || 0) : 0;
+}
+
+// Sync spend across all savings records for Indirect/Logistics projects
+function syncIndirectSpend(pid, spend) {
+  const db = getDb();
+  db.SavingsSummary.filter(s => s.ProjectID === pid).forEach(s => {
+    s.Spend = spend;
+    if (s.SavingsAmountType === 'Percentage' && s.SavingsAmountValue) {
+      s.Savings = spend * (s.SavingsAmountValue / 100);
+    }
+    const { NET, COI } = calcNetCoi(s.Savings, s.ImplementationDate, s.OneTimeSavings);
+    s.NET = NET; s.COI = COI;
+  });
+}
+
 // ==================== STATIC ====================
 router.get('/css/styles.css', (req, res) => {
   try { const c = fs.readFileSync(path.join(__dirname, 'public/css/styles.css'), 'utf8'); res.writeHead(200, {'Content-Type':'text/css'}); res.end(c); }
@@ -204,7 +268,7 @@ router.post('/projects/new/create', (req, res) => {
   const pid = nextId('ProjectSummary');
   db.ProjectSummary.push({ ProjectID: pid, ProjectHeaderID: hid, ESProjectNumber: esProjectNumber || null,
     ProjectStatusID: 1, UpdatedBy: req.session.user.username, RecordStatus: 'ACTIVE',
-    FiscalYear: Number(fiscalYear) || new Date().getFullYear(), IsLocked: 0, InsertedAt: new Date().toISOString() });
+    FiscalYear: Number(fiscalYear) || getFiscalYear(), IsLocked: 0, InsertedAt: new Date().toISOString() });
   saveDb(); setFlash(req, 'success', 'Project created.'); res.redirect('/projects/' + pid);
 });
 
@@ -272,26 +336,48 @@ router.post('/projects/:id/edit', (req, res) => {
 router.get('/projects/:id/savings/add', (req, res) => {
   if (!auth(req, res) || !perm(req, 'AddSavings')) return;
   const db = getDb();
-  const ps = db.ProjectSummary.find(p => p.ProjectID === Number(req.params.id));
+  const pid = Number(req.params.id);
+  const ps = db.ProjectSummary.find(p => p.ProjectID === pid);
   if (!ps) return res.html(404, 'Not found');
   const ph = db.ProjectHeader.find(h => h.ID === ps.ProjectHeaderID) || {};
-  res.html(200, views.savingsForm(vd(req, { title: 'Add Savings', project: { ...ps, ...ph }, error: '' })));
+  const isDirect = ph.SCSCommodity_TypeID === 2;
+  const directSpend = isDirect ? getDirectProjectSpend(pid) : 0;
+  res.html(200, views.savingsForm(vd(req, { title: 'Add Savings', project: { ...ps, ...ph }, error: '', directSpend })));
 });
 
 router.post('/projects/:id/savings/add', (req, res) => {
   if (!auth(req, res) || !perm(req, 'AddSavings')) return;
   const db = getDb();
   const pid = Number(req.params.id);
-  const { spend, savingsAmountType, savingsAmountValue, savings, remarks, coi, additionalSavingsConsiderations, implementationDate, exhibit, oneTimeSavings } = req.body;
-  const spendVal = parseFloat(spend) || 0;
+  const ps = db.ProjectSummary.find(p => p.ProjectID === pid);
+  const ph = ps ? db.ProjectHeader.find(h => h.ID === ps.ProjectHeaderID) : null;
+  const isDirect = ph && ph.SCSCommodity_TypeID === 2;
+  const { spend, savingsAmountType, savingsAmountValue, savings, remarks, additionalSavingsConsiderations, implementationDate, exhibit, oneTimeSavings } = req.body;
+
+  let spendVal;
+  if (isDirect) {
+    // Direct: spend comes from linked SSLCs
+    spendVal = getDirectProjectSpend(pid);
+  } else {
+    // Indirect/Logistics: spend is manually entered and synced across all savings records
+    spendVal = parseFloat(spend) || 0;
+  }
+
   let calcSavings = savingsAmountType === 'Percentage' && savingsAmountValue ? spendVal * (parseFloat(savingsAmountValue) / 100) : (parseFloat(savingsAmountValue || savings) || 0);
-  const coiVal = parseFloat(coi) || 0;
+  const { NET, COI } = calcNetCoi(calcSavings, implementationDate, oneTimeSavings);
+
   db.SavingsSummary.push({ SavingsID: nextId('SavingsSummary'), Spend: spendVal, SavingsAmountType: savingsAmountType,
     SavingsAmountValue: savingsAmountValue ? parseFloat(savingsAmountValue) : null, Savings: calcSavings, Remarks: remarks,
-    Status: 'Pending', NET: calcSavings - coiVal, COI: coiVal, ProjectID: pid, UpdatedBy: req.session.user.username,
+    Status: 'Pending', NET, COI, ProjectID: pid, UpdatedBy: req.session.user.username,
     AdditionalSavingsConsiderations: additionalSavingsConsiderations, ImplementationDate: implementationDate,
-    Exhibit: exhibit, OneTimeSavings: oneTimeSavings, FiscalYear: new Date().getFullYear(),
+    Exhibit: exhibit, OneTimeSavings: oneTimeSavings, FiscalYear: getFiscalYear(implementationDate),
     orig_Spend: spendVal, orig_Savings: calcSavings, InsertedAt: new Date().toISOString() });
+
+  // For Indirect/Logistics: sync spend across all savings records
+  if (!isDirect) {
+    syncIndirectSpend(pid, spendVal);
+  }
+
   saveDb(); setFlash(req, 'success', 'Savings added.'); res.redirect('/projects/' + pid);
 });
 
@@ -316,22 +402,42 @@ router.post('/projects/:id/unarchive', (req, res) => {
 router.post('/projects/:id/details/add', (req, res) => {
   if (!auth(req, res) || !perm(req, 'EditProject')) return;
   const db = getDb();
-  const { commodityTeamID, commodityFamilyID, commodityDescID, commodityCode, supplier, businessUnitID, regionID, siteID, siteName, supplierID, localSupplierID, purchaseTypeID } = req.body;
-  db.ProjectDetails.push({ ProjectDetailsID: nextId('ProjectDetails'), ProjectID: Number(req.params.id),
+  const pid = Number(req.params.id);
+  const { commodityTeamID, commodityFamilyID, commodityDescID, supplierID, localSupplierID, businessUnitID, regionID, siteID, purchaseTypeID } = req.body;
+  // Look up names for display
+  const sup = db.Suppliers.find(s => s.SupplierID === Number(supplierID)) || {};
+  const cd = db.Commodity_Description.find(c => c.Commodity_DescriptionID === Number(commodityDescID)) || {};
+  const bs = db.Business_Sites.find(b => b.SiteID === Number(siteID)) || {};
+  db.ProjectDetails.push({ ProjectDetailsID: nextId('ProjectDetails'), ProjectID: pid,
     SCSCommodity_Team_NameID: commodityTeamID ? Number(commodityTeamID) : null, SCSCommodity_FamilyID: commodityFamilyID ? Number(commodityFamilyID) : null,
-    SCSCommodity_DescriptionID: commodityDescID ? Number(commodityDescID) : null, Commodity_Code: commodityCode, Supplier: supplier,
-    SCSTBusinessUnitID: Number(businessUnitID), RegionID: Number(regionID), SiteID: siteID ? Number(siteID) : null, Site: siteName,
+    SCSCommodity_DescriptionID: commodityDescID ? Number(commodityDescID) : null, Commodity_Code: cd.Code || null, Supplier: sup.SupplierName || null,
+    SCSTBusinessUnitID: businessUnitID ? Number(businessUnitID) : null, RegionID: regionID ? Number(regionID) : null,
+    SiteID: siteID ? Number(siteID) : null, Site: bs.SiteName || null,
     SupplierID: supplierID ? Number(supplierID) : null, LocalSupplierID: localSupplierID ? Number(localSupplierID) : null,
     PurchaseTypeID: purchaseTypeID ? Number(purchaseTypeID) : null, RecordStatus: 'ACTIVE', InsertedAt: new Date().toISOString() });
-  saveDb(); setFlash(req, 'success', 'Detail added.'); res.redirect('/projects/' + req.params.id);
+  saveDb(); setFlash(req, 'success', 'Detail line added.'); res.redirect('/spend/' + pid + '/details');
+});
+
+// Update spend for Indirect/Logistics projects (syncs across all savings records)
+router.post('/spend/:projectId/update-spend', (req, res) => {
+  if (!auth(req, res) || !perm(req, 'AddSpend')) return;
+  const db = getDb();
+  const pid = Number(req.params.projectId);
+  const ps = db.ProjectSummary.find(p => p.ProjectID === pid);
+  const ph = ps ? db.ProjectHeader.find(h => h.ID === ps.ProjectHeaderID) : null;
+  if (!ph || ph.SCSCommodity_TypeID === 2) { setFlash(req, 'error', 'Not allowed for Direct projects.'); return res.redirect('/spend/' + pid + '/details'); }
+  const spend = parseFloat(req.body.spend) || 0;
+  syncIndirectSpend(pid, spend);
+  saveDb(); setFlash(req, 'success', 'Spend updated across all savings records.'); res.redirect('/spend/' + pid + '/details');
 });
 
 router.post('/projects/:id/details/:detailId/delete', (req, res) => {
   if (!auth(req, res)) return;
   const db = getDb();
+  const pid = Number(req.params.id);
   const d = db.ProjectDetails.find(d => d.ProjectDetailsID === Number(req.params.detailId));
   if (d) { d.RecordStatus = 'DELETED'; d.DeleteReason = 'Removed'; saveDb(); }
-  setFlash(req, 'success', 'Line removed.'); res.redirect('/projects/' + req.params.id);
+  setFlash(req, 'success', 'Line removed.'); res.redirect('/spend/' + pid + '/details');
 });
 
 router.get('/projects/:id', (req, res) => {
@@ -416,14 +522,24 @@ router.post('/spend/:projectId/sslc/link', (req, res) => {
       RecordStatus: 'ACTIVE', InsertedAt: new Date().toISOString() });
     totalSpend += (sslc.BaseSpendVolume || 0) + (sslc.AdjustmentVolume || 0); linked++;
   });
-  saveDb(); setFlash(req, 'success', `${linked} SSLC(s) linked. Spend: $${totalSpend.toLocaleString()}.`); res.redirect('/projects/' + pid);
+  // Recalculate total spend from all linked SSLCs and update all savings records
+  const newTotalSpend = getDirectProjectSpend(pid);
+  recalcProjectSavings(pid, newTotalSpend);
+  saveDb(); setFlash(req, 'success', `${linked} SSLC(s) linked. Total Spend: $${newTotalSpend.toLocaleString()}.`); res.redirect('/projects/' + pid);
 });
 
 router.post('/spend/:projectId/sslc/:sslcId/unlink', (req, res) => {
   if (!auth(req, res)) return;
   const db = getDb();
-  const d = db.ProjectDetails.find(d => d.ProjectID === Number(req.params.projectId) && d.SSLCs_ID === Number(req.params.sslcId) && d.RecordStatus === 'ACTIVE');
-  if (d) { d.RecordStatus = 'DELETED'; saveDb(); }
+  const pid = Number(req.params.projectId);
+  const d = db.ProjectDetails.find(d => d.ProjectID === pid && d.SSLCs_ID === Number(req.params.sslcId) && d.RecordStatus === 'ACTIVE');
+  if (d) {
+    d.RecordStatus = 'DELETED';
+    // Recalculate total spend and update all savings records
+    const newTotalSpend = getDirectProjectSpend(pid);
+    recalcProjectSavings(pid, newTotalSpend);
+    saveDb();
+  }
   setFlash(req, 'success', 'SSLC unlinked.'); res.redirect('/projects/' + req.params.projectId);
 });
 
@@ -435,6 +551,7 @@ router.get('/spend/:projectId/details', (req, res) => {
   if (!ps) return res.html(404, 'Not found');
   const ph = db.ProjectHeader.find(h => h.ID === ps.ProjectHeaderID) || {};
   const ct = db.Commodity_Type.find(c => c.Commodity_TypeID === ph.SCSCommodity_TypeID) || {};
+  const isDirect = ph.SCSCommodity_TypeID === 2;
   const project = { ...ps, ...ph, Commodity_TypeName: ct.Commodity_TypeName };
   const details = db.ProjectDetails.filter(d => d.ProjectID === pid && d.RecordStatus === 'ACTIVE').map(d => {
     const sslc = d.SSLCs_ID ? db.SSLCs.find(s => s.ID === d.SSLCs_ID) : null;
@@ -449,9 +566,23 @@ router.get('/spend/:projectId/details', (req, res) => {
       PurchaseTypeName: (db.PurchaseTypes.find(p => p.PurchaseTypeID === d.PurchaseTypeID) || {}).PurchaseTypeName };
   });
   const savings = db.SavingsSummary.filter(s => s.ProjectID === pid).sort((a, b) => b.SavingsID - a.SavingsID);
-  const totalSpend = details.reduce((s, d) => s + (d.SSLCTotalSpend||0), 0);
+  // Direct: spend from SSLCs; Indirect/Logistics: spend from savings records
+  const totalSpend = isDirect ? details.reduce((s, d) => s + (d.SSLCTotalSpend||0), 0) : getIndirectProjectSpend(pid);
   const totalSavings = savings.reduce((s, v) => s + (v.Savings||0), 0);
-  res.html(200, views.spendDetails(vd(req, { title: 'Spend & Savings', project, details, savings, totalSpend, totalSavings })));
+  // For Indirect/Logistics projects, provide dropdown data for adding detail lines
+  const extraData = {};
+  if (!isDirect) {
+    extraData.commodityTeams = db.Commodity_Team_Name;
+    extraData.commodityFamilies = db.Commodity_Family;
+    extraData.commodityDescriptions = db.Commodity_Description;
+    extraData.suppliers = db.Suppliers;
+    extraData.localSuppliers = db.LocalSuppliers;
+    extraData.businessUnits = db.Business_Unit;
+    extraData.regions = db.Region;
+    extraData.sites = db.Business_Sites;
+    extraData.purchaseTypes = db.PurchaseTypes;
+  }
+  res.html(200, views.spendDetails(vd(req, { title: 'Spend & Savings', project, details, savings, totalSpend, totalSavings, isDirect, ...extraData })));
 });
 
 // ==================== SERVER ====================
