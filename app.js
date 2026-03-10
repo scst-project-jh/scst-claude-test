@@ -54,9 +54,15 @@ function perm(req, p) { return (req.userPermissions || []).includes(p); }
 function toArr(v) { return Array.isArray(v) ? v : (v ? [v] : []); }
 
 // Fiscal year: Oct-Dec = calendar year + 1, Jan-Sep = calendar year
-function getFiscalYear(date) {
-  const d = date ? new Date(date) : new Date();
-  const month = d.getMonth(); // 0-indexed: 0=Jan, 9=Oct, 10=Nov, 11=Dec
+function getFiscalYear(dateStr) {
+  if (dateStr && typeof dateStr === 'string' && dateStr.includes('-')) {
+    const parts = dateStr.split('-');
+    const month = parseInt(parts[1], 10); // 1-12
+    const year = parseInt(parts[0], 10);
+    return month >= 10 ? year + 1 : year;
+  }
+  const d = new Date();
+  const month = d.getMonth(); // 0-indexed
   return month >= 9 ? d.getFullYear() + 1 : d.getFullYear();
 }
 
@@ -65,8 +71,12 @@ function getFiscalYear(date) {
 // When OneTimeSavings = 'Yes': NET = TotalSavings, COI = 0
 function calcNetCoi(totalSavings, implementationDate, oneTimeSavings) {
   if (oneTimeSavings === 'Yes') return { NET: totalSavings, COI: 0 };
-  const implDate = implementationDate ? new Date(implementationDate) : new Date();
-  const monthNumber = implDate.getMonth() + 1; // 1-12
+  let monthNumber;
+  if (implementationDate && typeof implementationDate === 'string' && implementationDate.includes('-')) {
+    monthNumber = parseInt(implementationDate.split('-')[1], 10); // 1-12, no timezone issue
+  } else {
+    monthNumber = new Date().getMonth() + 1;
+  }
   const fiscalMonthsElapsed = ((monthNumber - 10) + 12) % 12;
   const net = ((12 - fiscalMonthsElapsed) / 12) * totalSavings;
   const coi = totalSavings - net;
