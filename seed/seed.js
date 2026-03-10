@@ -167,11 +167,11 @@ function seed() {
   db.ProjectDetails.push({ ProjectDetailsID: nextId('ProjectDetails'), ProjectID: 3, SCSCommodity_Team_NameID: 2, SCSCommodity_FamilyID: 3, SCSCommodity_DescriptionID: 4, Commodity_Code: 'CRG-001', Supplier: 'Premium Packaging Co', SCSTBusinessUnitID: 3, RegionID: 2, SiteID: 3, Site: 'Munich Factory', SupplierID: 4, LocalSupplierID: 5, PurchaseTypeID: 2, RecordStatus: 'ACTIVE' });
 
   // Savings - NET/COI calculated from implementation date
-  // NET = ((22 - monthNumber) / 12) * Savings; COI = Savings - NET
+  // NET = ((12 - (((monthNumber - 10) + 12) % 12)) / 12) * Savings; COI = Savings - NET
   // For OneTimeSavings='Yes': NET = Savings, COI = 0
-  // Impl date 2025-09-01: month=9, NET = ((22-9)/12)*25000 = 27083.33, COI = 25000-27083.33 = -2083.33
-  // Actually: NET = ((22-9)/12)*25000 = 13/12*25000 = 27083.33; COI = 25000 - 27083.33
-  const net1 = Math.round(((22 - 9) / 12) * 25000 * 100) / 100; // month 9 (September)
+  // Impl date 2025-09-01: month=9, fiscalMonthsElapsed = ((9-10)+12)%12 = 11, NET = ((12-11)/12)*25000 = 2083.33
+  const fme1 = ((9 - 10) + 12) % 12; // month 9 (September) => 11 fiscal months elapsed
+  const net1 = Math.round(((12 - fme1) / 12) * 25000 * 100) / 100;
   db.SavingsSummary.push({ SavingsID: nextId('SavingsSummary'), Spend: 500000, SavingsAmountType: 'Percentage', SavingsAmountValue: 5, Savings: 25000, Remarks: 'Contract renegotiation savings', Status: 'Approved', NET: net1, COI: Math.round((25000 - net1) * 100) / 100, ProjectID: 1, UpdatedBy: 'admin', AdditionalSavingsConsiderations: 'Multi-year agreement', ImplementationDate: '2025-09-01', OneTimeSavings: 'No', FiscalYear: 2025 });
   // OneTimeSavings='Yes': NET = Savings, COI = 0
   db.SavingsSummary.push({ SavingsID: nextId('SavingsSummary'), Spend: 750000, SavingsAmountType: 'Fixed', SavingsAmountValue: null, Savings: 45000, Remarks: 'Route optimization savings', Status: 'Pending', NET: 45000, COI: 0, ProjectID: 2, UpdatedBy: 'approver', AdditionalSavingsConsiderations: 'Pending logistics review', ImplementationDate: '2025-10-01', OneTimeSavings: 'Yes', FiscalYear: 2026 });

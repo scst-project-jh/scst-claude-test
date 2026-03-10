@@ -61,13 +61,14 @@ function getFiscalYear(date) {
 }
 
 // NET/COI calculation based on implementation date
-// NET = ((22 - monthNumber) / 12) * TotalSavings; COI = TotalSavings - NET
+// NET = ((12 - (((monthNumber - 10) + 12) % 12)) / 12) * TotalSavings; COI = TotalSavings - NET
 // When OneTimeSavings = 'Yes': NET = TotalSavings, COI = 0
 function calcNetCoi(totalSavings, implementationDate, oneTimeSavings) {
   if (oneTimeSavings === 'Yes') return { NET: totalSavings, COI: 0 };
   const implDate = implementationDate ? new Date(implementationDate) : new Date();
   const monthNumber = implDate.getMonth() + 1; // 1-12
-  const net = ((22 - monthNumber) / 12) * totalSavings;
+  const fiscalMonthsElapsed = ((monthNumber - 10) + 12) % 12;
+  const net = ((12 - fiscalMonthsElapsed) / 12) * totalSavings;
   const coi = totalSavings - net;
   return { NET: Math.round(net * 100) / 100, COI: Math.round(coi * 100) / 100 };
 }
